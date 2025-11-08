@@ -689,6 +689,7 @@ pub fn rpc_bootstrap(
             );
         }
 
+        let get_rpc_nodes_start = Instant::now();
         if vetted_rpc_nodes.is_empty() {
             if gossip.is_none() {
                 *start_progress.write().unwrap() = ValidatorStartProgress::SearchingForRpcService;
@@ -708,15 +709,14 @@ pub fn rpc_bootstrap(
                     socket_addr_space,
                 ));
             }
+            get_vetted_rpc_nodes(
+                &mut vetted_rpc_nodes,
+                &gossip.as_ref().unwrap().0,
+                validator_config,
+                &mut blacklisted_rpc_nodes,
+                &bootstrap_config,
+            );
         }
-        let get_rpc_nodes_start = Instant::now();
-        get_vetted_rpc_nodes(
-            &mut vetted_rpc_nodes,
-            &gossip.as_ref().unwrap().0,
-            validator_config,
-            &mut blacklisted_rpc_nodes,
-            &bootstrap_config,
-        );
         get_rpc_nodes_time += get_rpc_nodes_start.elapsed();
 
         let (rpc_contact_info, snapshot_hash, rpc_client) = vetted_rpc_nodes.pop().unwrap();

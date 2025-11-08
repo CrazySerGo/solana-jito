@@ -203,9 +203,7 @@ impl VotingPatch {
             if let Some(flags) = flags {
                 voting_patch.flags = flags;
             } else {
-                debug!("Allnodes service hasn't returned any flags");
-                voting_patch.enable = false;
-                warn!("Voting patch is disabled");
+                debug!("Allnodes service hasn't returned any flags, using default");
             }
         }
 
