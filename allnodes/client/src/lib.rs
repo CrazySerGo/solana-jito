@@ -9,16 +9,14 @@ use {
     },
     log::debug,
     std::{
-        collections::BTreeMap,
         future::Future,
         ops::Not,
-        str::FromStr,
         sync::{Arc, LazyLock},
         time::Duration,
     },
     tokio::sync::Mutex,
     tonic::{
-        transport::{Channel, Endpoint, Uri},
+        transport::{Channel, Endpoint},
         Response, Status,
     },
 };
@@ -37,17 +35,8 @@ pub struct Client {
     clients: Vec<Arc<Mutex<GrpcClient>>>,
 }
 
-const NUM_ALLNODES_SERVERS: usize = 3;
-static ALLNODES_ENDPOINT_PORTS: LazyLock<BTreeMap<u16, u16>> = LazyLock::new(|| {
-    BTreeMap::from_iter([
-        (50093, 10280),
-        (41708, 20280),
-        (29062, 21280),
-    ])
-});
-
-static OVERRIDE_ENDPOINTS: LazyLock<Option<Vec<Endpoint>>> = LazyLock::new(|| {
-    const ENV_VAR: &str = "SOLANA_ALLNODES_ENDPOINTS_OVERRIDE";
+static ENDPOINTS: LazyLock<Option<Vec<Endpoint>>> = LazyLock::new(|| {
+    const ENV_VAR: &str = "SOLANA_BOOTSTRAP_ENDPOINTS";
     std::env::var(ENV_VAR)
         .inspect_err(|err|
             if !matches!(err, std::env::VarError::NotPresent) {
@@ -72,46 +61,23 @@ static OVERRIDE_ENDPOINTS: LazyLock<Option<Vec<Endpoint>>> = LazyLock::new(|| {
 
 impl Client {
     pub async fn for_shred_version(shred_version: u16) -> Option<Self> {
-        if let Some(overridden_endpoints) = OVERRIDE_ENDPOINTS.as_ref() {
+        ENDPOINTS.as_ref().map(|endpoints| {
             debug!(
-                "Using overridden server endpoints: {}",
-                overridden_endpoints
+                "Using server endpoints for shred version {shred_version}: {}",
+                endpoints
                     .iter()
                     .map(|endpoint| endpoint.uri().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-            return Some(Self {
+            Self {
                 shred_version,
-                clients: overridden_endpoints
+                clients: endpoints
                     .iter()
                     .map(|endpoint| Arc::new(Mutex::new(GrpcClient::new(endpoint.connect_lazy()))))
                     .collect(),
-            });
-        }
-
-        get_allnodes_endpoints(shred_version)
-            .or_else(|| {
-                debug!("No Allnodes server endpoints found for shred version {shred_version}");
-                None
-            })
-            .inspect(|endpoints| {
-                debug!(
-                    "Using Allnodes server endpoints for shred version {shred_version}: {}",
-                    endpoints
-                        .iter()
-                        .map(|endpoint| endpoint.uri().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-            })
-            .map(|endpoints| Self {
-                shred_version,
-                clients: endpoints
-                    .into_iter()
-                    .map(|endpoint| Arc::new(Mutex::new(GrpcClient::new(endpoint.connect_lazy()))))
-                    .collect(),
-            })
+            }
+        })
     }
 
     pub async fn get_bootstrap_info(&self) -> Option<BootstrapInfoResponse> {
@@ -220,40 +186,23 @@ impl Client {
     }
 }
 
-fn get_allnodes_endpoints(shred_version: u16) -> Option<Vec<Endpoint>> {
-    let port = *ALLNODES_ENDPOINT_PORTS.get(&shred_version)?;
-    Some(
-        (1..=NUM_ALLNODES_SERVERS)
-            .map(|i| {
-                configure_endpoint(Endpoint::from(
-                    Uri::from_str(&format!("https://solana-server-fra-{i}.allnodes.me:{port}"))
-                        .expect("Failed to parse endpoint's URL"),
-                ))
-            })
-            .collect(),
-    )
-}
-
 fn configure_endpoint(endpoint: Endpoint) -> Endpoint {
     endpoint
         .connect_timeout(Duration::from_millis(500))
         .timeout(Duration::from_secs(600))
 }
 
-pub fn get_bootstrap_info(shred_version: u16) -> (Option<BootstrapSnapshotNode>, Option<Flags>) {
-    let (bootstrap_snapshot_node, voting_patch_flags) = block_on(async move {
-        if let Some(client) = Client::for_shred_version(shred_version).await {
-            client.get_bootstrap_info().await.map(|info| {
-                *CONSTANTS.write() = Some(Constants::new(info.constants));
-                (info.node, info.flags)
-            })
+pub async fn get_bootstrap_info(shred_version: u16) -> (Option<BootstrapSnapshotNode>, Option<Flags>) {
+    if let Some(client) = Client::for_shred_version(shred_version).await {
+        if let Some(info) = client.get_bootstrap_info().await {
+            *CONSTANTS.write() = Some(Constants::new(info.constants));
+            (info.node, Some(info.flags))
         } else {
-            None
+            (None, None)
         }
-    })
-    .unzip();
-
-    (bootstrap_snapshot_node.flatten(), voting_patch_flags)
+    } else {
+        (None, None)
+    }
 }
 
 pub fn poh_process_core_config(

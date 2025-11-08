@@ -671,31 +671,25 @@ pub fn rpc_bootstrap(
     let mut gossip: Option<(Arc<ClusterInfo>, Arc<AtomicBool>, GossipService)> = None;
     let mut vetted_rpc_nodes = vec![];
     let mut download_abort_count = 0;
-    let mut allnodes_resolver_attempts_left = 3_usize;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
     loop {
-        if allnodes_resolver_attempts_left > 0 {
-            allnodes_resolver_attempts_left = allnodes_resolver_attempts_left.saturating_sub(1);
+        let (snapshot_node, flags) =
+            runtime.block_on(allnodes_client::get_bootstrap_info(expected_shred_version));
 
-            let (snapshot_node, flags) =
-                allnodes_client::get_bootstrap_info(expected_shred_version);
+        if flags.is_some() {
+            validator_config.voting_patch_flags = flags;
+        }
 
-            if flags.is_some() {
-                validator_config.voting_patch_flags = flags;
-            }
+        if let Some(snapshot_node) = snapshot_node {
+            allnodes_push_rpc_node_to_vetted(
+                snapshot_node,
+                expected_shred_version,
+                &mut vetted_rpc_nodes,
+                &blacklisted_rpc_nodes,
+            );
+        }
 
-            if let Some(snapshot_node) = snapshot_node {
-                allnodes_push_rpc_node_to_vetted(
-                    snapshot_node,
-                    expected_shred_version,
-                    &mut vetted_rpc_nodes,
-                    &blacklisted_rpc_nodes,
-                );
-            }
-
-            if vetted_rpc_nodes.is_empty() {
-                continue;
-            }
-        } else {
+        if vetted_rpc_nodes.is_empty() {
             if gossip.is_none() {
                 *start_progress.write().unwrap() = ValidatorStartProgress::SearchingForRpcService;
 
@@ -714,17 +708,16 @@ pub fn rpc_bootstrap(
                     socket_addr_space,
                 ));
             }
-
-            let get_rpc_nodes_start = Instant::now();
-            get_vetted_rpc_nodes(
-                &mut vetted_rpc_nodes,
-                &gossip.as_ref().unwrap().0,
-                validator_config,
-                &mut blacklisted_rpc_nodes,
-                &bootstrap_config,
-            );
-            get_rpc_nodes_time += get_rpc_nodes_start.elapsed();
         }
+        let get_rpc_nodes_start = Instant::now();
+        get_vetted_rpc_nodes(
+            &mut vetted_rpc_nodes,
+            &gossip.as_ref().unwrap().0,
+            validator_config,
+            &mut blacklisted_rpc_nodes,
+            &bootstrap_config,
+        );
+        get_rpc_nodes_time += get_rpc_nodes_start.elapsed();
 
         let (rpc_contact_info, snapshot_hash, rpc_client) = vetted_rpc_nodes.pop().unwrap();
 
